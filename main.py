@@ -3,6 +3,7 @@ import sqlite3
 import google.generativeai as genai
 import os
 import threading
+import asyncio
 from flask import Flask
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,7 +22,7 @@ def health():
     return 'OK', 200
 
 def run_flask():
-    # Koyeb health check usually expects port 8000 or 8080
+    # Koyeb health check usually expects port 8000
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port)
 
@@ -341,6 +342,7 @@ def main() -> None:
     # Start Flask in a separate thread for health checks
     threading.Thread(target=run_flask, daemon=True).start()
     
+    # Use Application.builder() which is the correct way for v20+
     application = Application.builder().token(config.BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -361,6 +363,8 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    
+    # run_polling() is the correct async-compatible way in v20+
     application.run_polling()
 
 if __name__ == "__main__":
