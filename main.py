@@ -1,6 +1,4 @@
 import logging
-import sqlite3
-import google.generativeai as genai
 import os
 import threading
 import asyncio
@@ -13,6 +11,7 @@ from telegram.ext import (
 
 import config
 import database
+import google.generativeai as genai
 
 # Flask app for health checks
 app = Flask(__name__)
@@ -22,7 +21,6 @@ def health():
     return 'OK', 200
 
 def run_flask():
-    # Koyeb health check usually expects port 8000
     port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port)
 
@@ -31,7 +29,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
 logger = logging.getLogger(__name__)
 
 # Gemini API initialization
@@ -39,333 +36,235 @@ genai.configure(api_key=config.GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Conversation states
-NAME, PHONE_NUMBER, AI_CONSULTANT, SERVICE_TYPE, DIMENSIONS, MATERIAL, DESIGN_STATUS, INSTALLATION_LOCATION, DEADLINE, CONFIRM_ORDER = range(10)
+LANG, NAME, PHONE, AI_CONSULT, SERVICE, DIMENSIONS, LOCATION, FINAL_INPUT, CONFIRM = range(9)
+
+# Translations
+STRINGS = {
+    'uz': {
+        'welcome': "Assalomu alaykum! **Oson Reklama** botiga xush kelibsiz. ✨\nBiznesingiz uchun eng yorqin reklama yechimlarini taqdim etamiz.",
+        'choose_lang': "Iltimos, muloqot tilini tanlang:",
+        'get_name': "Tanishganimizdan xursandmiz! Ismingizni yozib yuboring:",
+        'get_phone': "Rahmat! Endi telefon raqamingizni yuboring (tugmani bosing yoki yozing):",
+        'phone_btn': "📞 Raqamni yuborish",
+        'ai_consult': "Sizga qanday reklama kerak? Masalan: 'Menga do'konim uchun chiroyli yonadigan harflar kerak' deb yozishingiz yoki ovozli xabar yuborishingiz mumkin. 🎤",
+        'service_suggest': "AI konsultantimiz sizga **{service}** xizmatini taklif qiladi. Ma'qulmi?",
+        'get_dims': "O'lchamlarni kiriting (masalan: 2x3 metr yoki A4):",
+        'get_loc': "Reklama o'rnatiladigan joy lokatsiyasini yuboring (ixtiyoriy):",
+        'loc_btn': "📍 Lokatsiya yuborish",
+        'skip_btn': "➡️ O'tkazib yuborish",
+        'get_final': "Qo'shimcha ma'lumot bormi? Matn yozing yoki ovozli xabar yuboring:",
+        'confirm': "Buyurtma ma'lumotlari to'g'rimi?",
+        'done': "Rahmat! Buyurtmangiz qabul qilindi. Tez orada bog'lanamiz. ✅",
+        'portfolio': "Bizning ishlarimiz: https://t.me/osonreklamaishlar",
+        'yes': "✅ Ha",
+        'no': "❌ Yo'q / Tahrirlash",
+        'admin_new_order': "🆕 **YANGI BUYURTMA**",
+    },
+    'ru': { # Using Cyrillic Uzbek as 'ru' key for simplicity in logic
+        'welcome': "Ассалому алайкум! **Oson Reklama** ботига хуш келибсиз. ✨\nБизнесингиз учун энг ёрқин реклама ечимларини тақдим этамиз.",
+        'choose_lang': "Илтимос, мулоқот тилини танланг:",
+        'get_name': "Танишганимиздан хурсандмиз! Исмингизни ёзиб юборинг:",
+        'get_phone': "Раҳмат! Энди телефон рақамингизни юборинг (тугмани босинг ёки ёзинг):",
+        'phone_btn': "📞 Рақамни юбориш",
+        'ai_consult': "Сизга қандай реклама керак? Масалан: 'Менга дўконим учун чиройли ёнадиган ҳарфлар керак' деб ёзишингиз ёки овозли хабар юборишингиз мумкин. 🎤",
+        'service_suggest': "AI консултантимиз сизга **{service}** хизматини таклиф қилади. Маъқулми?",
+        'get_dims': "Ўлчамларни киритинг (масалан: 2х3 метр ёки А4):",
+        'get_loc': "Реклама ўрнатиладиган жой локациясини юборинг (ихтиёрий):",
+        'loc_btn': "📍 Локация юбориш",
+        'skip_btn': "➡️ Ўтказиб юбориш",
+        'get_final': "Қўшимча маълумот борми? Матн ёзинг ёки овозли хабар юборинг:",
+        'confirm': "Буюртма маълумотлари тўғрими?",
+        'done': "Раҳмат! Буюртмангиз қабул қилинди. Тез орада боғланамиз. ✅",
+        'portfolio': "Бизнинг ишларимиз: https://t.me/osonreklamaishlar",
+        'yes': "✅ Ҳа",
+        'no': "❌ Йўқ / Таҳрирлаш",
+        'admin_new_order': "🆕 **ЯНГИ БУЮРТМА**",
+    }
+}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
     database.init_db()
-    db_user = database.get_user(user.id)
-
-    welcome_message = (
-        "Assalomu alaykum, hurmatli mijoz! 👋\n\n"
-        "Sizni **Oson Reklama** agentligining buyurtmalarni qabul qilish botida ko'rib turganimizdan mamnunmiz! ✨\n\n"
-        "Bizning agentligimiz sizning biznesingiz uchun eng zamonaviy va samarali tashqi reklama yechimlarini taqdim etadi. Keling, birgalikda brendingizni yorqinroq qilamiz! 🚀\n\n"
-    )
-
-    if db_user:
-        await update.message.reply_html(
-            f"{welcome_message}Sizga qanday turdagi reklama xizmati kerak yoki qanday muammoni hal qilmoqchisiz?"
-        )
-        return AI_CONSULTANT
-    else:
-        await update.message.reply_html(
-            f"{welcome_message}Iltimos, avval ismingizni kiriting."
-        )
-        return NAME
-
-async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_name = update.message.text
-    context.user_data["name"] = user_name
-    
-    contact_button = KeyboardButton(text="📞 Telefon raqamni yuborish", request_contact=True)
-    reply_markup = ReplyKeyboardMarkup([[contact_button]], one_time_keyboard=True, resize_keyboard=True)
-
-    await update.message.reply_html(
-        f"Rahmat, **{user_name}**! Endi iltimos, telefon raqamingizni yuboring. Bu bizga siz bilan tezkor bog'lanishga yordam beradi. 👇",
-        reply_markup=reply_markup,
-    )
-    return PHONE_NUMBER
-
-async def get_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
-    phone_number = update.message.contact.phone_number if update.message.contact else update.message.text
-    context.user_data["phone_number"] = phone_number
-
-    database.add_user(user.id, context.user_data["name"], phone_number)
-
-    await update.message.reply_html(
-        "Ajoyib! Ma'lumotlaringiz muvaffaqiyatli saqlandi. ✅\n\n" 
-        "Endi sizga qanday turdagi reklama xizmati kerakligini yoki qanday muammoni hal qilmoqchi ekanligingizni qisqacha ta'riflab bering. Bizning AI konsultantimiz sizga eng mos yechimni topishga yordam beradi. 🤖",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return AI_CONSULTANT
-
-async def ai_consultant(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    user_input = update.message.text
-    
-    database.add_chat_message(user_id, "user", user_input)
-    history = database.get_chat_history(user_id)
-    
-    prompt = "You are an AI assistant for Oson Reklama agency. Analyze the user's request and identify the most suitable advertising service type from: Banner, Bo'rtma harflar, Flayer / Vizitka, Layt-boks, Boshqa / Maxsus loyiha. Respond ONLY with the identified service type, or 'Boshqa / Maxsus loyiha' if unsure. Keep the response short and concise.\n\n"
-    for role, content in history:
-        prompt += f"{role}: {content}\n"
-    prompt += "assistant:"
-
-    try:
-        response = model.generate_content(prompt)
-        service_type = response.text.strip()
-        database.add_chat_message(user_id, "assistant", service_type)
-    except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        service_type = "Boshqa / Maxsus loyiha"
-
-    context.user_data["service_type"] = service_type
-
     keyboard = [
-        [InlineKeyboardButton("🖼 Premium Banner", callback_data="Banner")],
-        [InlineKeyboardButton("✨ Bo'rtma Harflar", callback_data="Bo'rtma harflar")],
-        [InlineKeyboardButton("📄 Flayer & Vizitka", callback_data="Flayer / Vizitka")],
-        [InlineKeyboardButton("💡 Layt-boks", callback_data="Layt-boks")],
-        [InlineKeyboardButton("🏗 Maxsus Loyiha", callback_data="Boshqa / Maxsus loyiha")],
-        [InlineKeyboardButton("📞 Biz bilan bog'laning", url="https://t.me/osonreklama_admin")]
+        [InlineKeyboardButton("O'zbek (Lotin)", callback_data='lang_uz')],
+        [InlineKeyboardButton("Ўзбек (Кирилл)", callback_data='lang_ru')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_html(
-        f"Tushunarli! Bizning AI konsultantimiz sizning so'rovingizga asosan **{service_type}** xizmatini taklif qiladi. \n\n" 
-        "Iltimos, quyidagi variantlardan birini tanlang yoki agar boshqa xizmat kerak bo'lsa, uni yozib yuboring: 👇",
-        reply_markup=reply_markup,
+    await update.message.reply_text(
+        "Assalomu alaykum! Iltimos, tilni tanlang / Илтимос, тилни танланг:",
+        reply_markup=reply_markup
     )
-    return SERVICE_TYPE
+    return LANG
 
-async def select_service_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    if query:
-        await query.answer()
-        selected_service = query.data
-        await query.edit_message_text(
-            text=f"Siz **{selected_service}** xizmatini tanladingiz. Ajoyib tanlov!",
-            parse_mode="HTML"
-        )
-    else:
-        selected_service = update.message.text
-        await update.message.reply_html(f"Siz **{selected_service}** xizmatini tanladingiz. Ajoyib tanlov!")
-
-    context.user_data["service_type"] = selected_service
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Endi buyurtmangizning asosiy o'lchamlarini kiriting. \n\n" 
-             "**Misol**: `100x200 sm` (eni x bo'yi) yoki `A4` format. \n" 
-             "Iltimos, aniq ma'lumot bering. 📏",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return DIMENSIONS
-
-async def get_dimensions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["dimensions"] = update.message.text
-    keyboard = [
-        [InlineKeyboardButton("💎 Premium Sifat", callback_data="Premium Sifat")],
-        [InlineKeyboardButton("💰 Budjet Variant", callback_data="Budjet Variant")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_html(
-        "Material turini tanlang: \n\n" 
-        "**💎 Premium Sifat**: Uzoq muddatli, ob-havoga chidamli va estetik jihatdan yuqori materiallar. \n" 
-        "**💰 Budjet Variant**: Iqtisodiy jihatdan qulay, ammo sifatli yechimlar. \n\n" 
-        "Qaysi biri sizga ma'qul?",
-        reply_markup=reply_markup,
-    )
-    return MATERIAL
-
-async def get_material(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    if query:
-        await query.answer()
-        context.user_data["material"] = query.data
-        await query.edit_message_text(
-            text=f"Siz **{query.data}** material turini tanladingiz. Rahmat!",
-            parse_mode="HTML"
-        )
-    else:
-        context.user_data["material"] = update.message.text
-        await update.message.reply_html(f"Siz **{update.message.text}** material turini tanladingiz. Rahmat!")
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Tayyor maketim bor", callback_data="Tayyor maketim bor")],
-        [InlineKeyboardButton("🎨 Dizayner kerak", callback_data="Dizayner kerak")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Dizayn holatini aniqlaymiz: \n\n" 
-             "**✅ Tayyor maketingiz bormi**? Unda bizga yuborishingiz mumkin. \n" 
-             "**🎨 Dizayner kerakmi**? Bizning professional dizaynerlar jamoasi sizga yordam beradi. \n\n" 
-             "Iltimos, tanlang:",
-        parse_mode="HTML",
-        reply_markup=reply_markup,
-    )
-    return DESIGN_STATUS
-
-async def get_design_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    if query:
-        await query.answer()
-        context.user_data["design_status"] = query.data
-        await query.edit_message_text(
-            text=f"Siz **{query.data}** ni tanladingiz. Tushunarli!",
-            parse_mode="HTML"
-        )
-    else:
-        context.user_data["design_status"] = update.message.text
-        await update.message.reply_html(f"Siz **{update.message.text}** ni tanladingiz. Tushunarli!")
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Reklama qayerga o'rnatiladi? \n\n" 
-             "**Misol**: `Do'kon peshtoqiga`, `Bino fasadiga`, `Ichki makonga`. \n" 
-             "Iltimos, montaj joyini aniq ko'rsating. 📍",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return INSTALLATION_LOCATION
-
-async def get_installation_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["installation_location"] = update.message.text
-    await update.message.reply_html(
-        "Buyurtma qachongacha tayyor bo'lishi kerak? \n\n" 
-        "**Misol**: `1 hafta ichida`, `2026-06-01 gacha`, `Shoshilinch`. \n" 
-        "Iltimos, muddatni kiriting. ⏳"
-    )
-    return DEADLINE
-
-async def get_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["deadline"] = update.message.text
-
-    summary = (
-        """━━━━━━━━━━━━━━━
-📋 **BUYURTMA XULOSASI**
-━━━━━━━━━━━━━━━
-
-**Xizmat turi**: {service_type}
-**O'lchamlari**: {dimensions}
-**Material**: {material}
-**Dizayn holati**: {design_status}
-**Montaj joyi**: {installation_location}
-**Muddat**: {deadline}
-
-Ma'lumotlar to'g'rimi? Iltimos, tasdiqlang yoki tahrirlang. 👇""".format(
-            service_type=context.user_data.get("service_type"),
-            dimensions=context.user_data.get("dimensions"),
-            material=context.user_data.get("material"),
-            design_status=context.user_data.get("design_status"),
-            installation_location=context.user_data.get("installation_location"),
-            deadline=context.user_data.get("deadline")
-        )
-    )
-    keyboard = [
-        [InlineKeyboardButton("✅ Tasdiqlash", callback_data="Tasdiqlash")],
-        [InlineKeyboardButton("✏️ Tahrirlash", callback_data="Tahrirlash")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_html(summary, reply_markup=reply_markup)
-    return CONFIRM_ORDER
-
-async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    response = query.data
+    lang = query.data.split('_')[1]
+    context.user_data['lang'] = lang
+    
+    s = STRINGS[lang]
+    await query.edit_message_text(f"{s['welcome']}\n\n{s['get_name']}", parse_mode='Markdown')
+    return NAME
 
-    if response == "Tasdiqlash":
-        user = update.effective_user
-        database.add_user(user.id, context.user_data.get("name"), context.user_data.get("phone_number"))
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['name'] = update.message.text
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    btn = [[KeyboardButton(s['phone_btn'], request_contact=True)]]
+    await update.message.reply_text(s['get_phone'], reply_markup=ReplyKeyboardMarkup(btn, resize_keyboard=True, one_time_keyboard=True))
+    return PHONE
+
+async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    phone = update.message.contact.phone_number if update.message.contact else update.message.text
+    context.user_data['phone'] = phone
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    await update.message.reply_text(f"{s['portfolio']}\n\n{s['ai_consult']}", reply_markup=ReplyKeyboardRemove())
+    return AI_CONSULT
+
+async def ai_consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    if update.message.voice:
+        context.user_data['voice_file_id'] = update.message.voice.file_id
+        user_input = "[Ovozli xabar yuborildi]"
+    else:
+        user_input = update.message.text
+    
+    context.user_data['initial_desc'] = user_input
+    
+    # Simple AI classification
+    prompt = f"Analyze this advertising request: '{user_input}'. Classify it into one of: Banner, Bo'rtma harflar, Laytboks, Vizitka/Flayer, Boshqa. Respond with ONLY the category name."
+    try:
+        response = model.generate_content(prompt)
+        service = response.text.strip()
+    except:
+        service = "Boshqa"
+    
+    context.user_data['service'] = service
+    
+    keyboard = [[InlineKeyboardButton(s['yes'], callback_data='confirm_service'), InlineKeyboardButton(s['no'], callback_data='edit_service')]]
+    await update.message.reply_text(s['service_suggest'].format(service=service), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return SERVICE
+
+async def get_dims(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query: await query.answer()
+    
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    msg = s['get_dims']
+    if query:
+        await query.edit_message_text(msg)
+    else:
+        await update.message.reply_text(msg)
+    return DIMENSIONS
+
+async def get_loc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['dims'] = update.message.text
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    btn = [[KeyboardButton(s['loc_btn'], request_location=True)], [KeyboardButton(s['skip_btn'])]]
+    await update.message.reply_text(s['get_loc'], reply_markup=ReplyKeyboardMarkup(btn, resize_keyboard=True, one_time_keyboard=True))
+    return LOCATION
+
+async def get_final(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.location:
+        context.user_data['lat'] = update.message.location.latitude
+        context.user_data['lon'] = update.message.location.longitude
+    
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    await update.message.reply_text(s['get_final'], reply_markup=ReplyKeyboardRemove())
+    return FINAL_INPUT
+
+async def pre_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    if update.message.voice:
+        context.user_data['final_voice_id'] = update.message.voice.file_id
+        context.user_data['final_desc'] = "[Ovozli xabar]"
+    else:
+        context.user_data['final_desc'] = update.message.text
+    
+    summary = f"📋 **{s['confirm']}**\n\n👤 {context.user_data['name']}\n📞 {context.user_data['phone']}\n🛠 {context.user_data['service']}\n📏 {context.user_data['dims']}"
+    
+    keyboard = [[InlineKeyboardButton(s['yes'], callback_data='final_yes'), InlineKeyboardButton(s['no'], callback_data='final_no')]]
+    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return CONFIRM
+
+async def final_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    lang = context.user_data['lang']
+    s = STRINGS[lang]
+    
+    if query.data == 'final_yes':
+        # Save to DB
         order_id = database.add_order(
-            user.id,
-            context.user_data.get("service_type"),
-            context.user_data.get("dimensions"),
-            context.user_data.get("material"),
-            context.user_data.get("design_status"),
-            context.user_data.get("installation_location"),
-            context.user_data.get("deadline"),
-            "Kutilmoqda"
+            update.effective_user.id,
+            context.user_data['service'],
+            context.user_data['dims'],
+            context.user_data.get('lat'),
+            context.user_data.get('lon'),
+            context.user_data.get('final_voice_id') or context.user_data.get('voice_file_id'),
+            context.user_data['final_desc']
         )
-
-        admin_message = (
-            """🆕 **YANGI BUYURTMA** #{order_id}
-
-━━━━━━━━━━━━━━━
-👤 **Mijoz ma'lumotlari**:
-━━━━━━━━━━━━━━━
-**Ismi**: {name}
-**Telefon raqami**: {phone_number}
-**Telegram profili**: @{username} (ID: `{user_id}`)
-
-━━━━━━━━━━━━━━━
-📝 **Texnik vazifa**:
-━━━━━━━━━━━━━━━
-**1. Xizmat turi**: {service_type}
-**2. O'lchamlari**: {dimensions}
-**3. Material**: {material}
-**4. Dizayn holati**: {design_status}
-**5. Montaj joyi**: {installation_location}
-**6. Muddat**: {deadline}
-
-**Status**: ⏳ Kutilmoqda""".format(
-                order_id=order_id,
-                name=context.user_data.get("name"),
-                phone_number=context.user_data.get("phone_number"),
-                username=user.username,
-                user_id=user.id,
-                service_type=context.user_data.get("service_type"),
-                dimensions=context.user_data.get("dimensions"),
-                material=context.user_data.get("material"),
-                design_status=context.user_data.get("design_status"),
-                installation_location=context.user_data.get("installation_location"),
-                deadline=context.user_data.get("deadline")
-            )
-        )
-
-        admin_keyboard = [
-            [InlineKeyboardButton("✅ Qabul qildim", callback_data=f"admin_accept_{order_id}")],
-            [InlineKeyboardButton("🔄 Jarayonda", callback_data=f"admin_process_{order_id}")]
-        ]
-        admin_reply_markup = InlineKeyboardMarkup(admin_keyboard)
-
-        if config.ADMIN_CHAT_ID:
-            await context.bot.send_message(chat_id=config.ADMIN_CHAT_ID, text=admin_message, parse_mode="HTML", reply_markup=admin_reply_markup)
-
-        await query.edit_message_text("Buyurtmangiz muvaffaqiyatli qabul qilindi! 🎉 Tez orada siz bilan bog'lanamiz. Ishonchingiz uchun rahmat! 🙏", parse_mode="HTML")
+        
+        # Send to Admin Group
+        admin_msg = f"🚀 **{s['admin_new_order']} #{order_id}**\n\n" \
+                    f"👤 Mijoz: {context.user_data['name']}\n" \
+                    f"📞 Tel: {context.user_data['phone']}\n" \
+                    f"🛠 Xizmat: {context.user_data['service']}\n" \
+                    f"📏 O'lcham: {context.user_data['dims']}\n" \
+                    f"📝 Izoh: {context.user_data['final_desc']}"
+        
+        await context.bot.send_message(config.ADMIN_CHAT_ID, admin_msg, parse_mode='Markdown')
+        
+        # Send Location if exists
+        if 'lat' in context.user_data:
+            await context.bot.send_location(config.ADMIN_CHAT_ID, context.user_data['lat'], context.user_data['lon'])
+            
+        # Forward Voice if exists
+        voice_id = context.user_data.get('final_voice_id') or context.user_data.get('voice_file_id')
+        if voice_id:
+            await context.bot.send_voice(config.ADMIN_CHAT_ID, voice_id)
+            
+        await query.edit_message_text(s['done'])
         return ConversationHandler.END
-    elif response == "Tahrirlash":
-        await query.edit_message_text("Iltimos, xizmat turini qaytadan tanlang yoki yozing: 👇", parse_mode="HTML")
-        return AI_CONSULTANT
-    return CONFIRM_ORDER
+    else:
+        await query.edit_message_text(s['ai_consult'])
+        return AI_CONSULT
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Muloqot yakunlandi. Xizmatlarimiz kerak bo'lsa, yana bog'laning! 😊", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
-def main() -> None:
-    # Start Flask in a separate thread for health checks
+def main():
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # Use Application.builder() which is the correct way for v20+
-    application = Application.builder().token(config.BOT_TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            PHONE_NUMBER: [MessageHandler(filters.CONTACT | filters.TEXT, get_phone_number)],
-            AI_CONSULTANT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ai_consultant)],
-            SERVICE_TYPE: [CallbackQueryHandler(select_service_type), MessageHandler(filters.TEXT & ~filters.COMMAND, select_service_type)],
-            DIMENSIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_dimensions)],
-            MATERIAL: [CallbackQueryHandler(get_material), MessageHandler(filters.TEXT & ~filters.COMMAND, get_material)],
-            DESIGN_STATUS: [CallbackQueryHandler(get_design_status), MessageHandler(filters.TEXT & ~filters.COMMAND, get_design_status)],
-            INSTALLATION_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_installation_location)],
-            DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_deadline)],
-            CONFIRM_ORDER: [CallbackQueryHandler(confirm_order)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    application.add_handler(conv_handler)
+    app_tg = Application.builder().token(config.BOT_TOKEN).build()
     
-    # run_polling() is the correct async-compatible way in v20+
-    application.run_polling()
+    conv = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            LANG: [CallbackQueryHandler(set_lang, pattern='^lang_')],
+            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            PHONE: [MessageHandler((filters.TEXT | filters.CONTACT) & ~filters.COMMAND, get_phone)],
+            AI_CONSULT: [MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, ai_consult)],
+            SERVICE: [CallbackQueryHandler(get_dims, pattern='confirm_service'), CallbackQueryHandler(ai_consult, pattern='edit_service')],
+            DIMENSIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_loc)],
+            LOCATION: [MessageHandler((filters.LOCATION | filters.TEXT) & ~filters.COMMAND, get_final)],
+            FINAL_INPUT: [MessageHandler((filters.TEXT | filters.VOICE) & ~filters.COMMAND, pre_confirm)],
+            CONFIRM: [CallbackQueryHandler(final_done, pattern='^final_')],
+        },
+        fallbacks=[CommandHandler('start', start)]
+    )
+    
+    app_tg.add_handler(conv)
+    app_tg.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
