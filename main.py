@@ -13,15 +13,16 @@ from telegram.ext import (
 import config
 import database
 
-# Flask app to keep the service alive
-app = Flask('')
+# Flask app for health checks
+app = Flask(__name__)
 
 @app.route('/')
-def home():
-    return "Bot is running!"
+def health():
+    return 'OK', 200
 
 def run_flask():
-    port = int(os.environ.get('PORT', 8080))
+    # Koyeb health check usually expects port 8000 or 8080
+    port = int(os.environ.get('PORT', 8000))
     app.run(host='0.0.0.0', port=port)
 
 # Enable logging
@@ -337,7 +338,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 def main() -> None:
-    # Start Flask in a separate thread
+    # Start Flask in a separate thread for health checks
     threading.Thread(target=run_flask, daemon=True).start()
     
     application = Application.builder().token(config.BOT_TOKEN).build()
