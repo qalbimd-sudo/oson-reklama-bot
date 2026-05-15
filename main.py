@@ -1,6 +1,9 @@
 import logging
 import sqlite3
 import google.generativeai as genai
+import os
+import threading
+from flask import Flask
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -9,6 +12,17 @@ from telegram.ext import (
 
 import config
 import database
+
+# Flask app to keep the service alive
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # Enable logging
 logging.basicConfig(
@@ -78,13 +92,9 @@ async def ai_consultant(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user_id = update.effective_user.id
     user_input = update.message.text
     
-    # Save user message to history
     database.add_chat_message(user_id, "user", user_input)
-    
-    # Get chat history
     history = database.get_chat_history(user_id)
     
-    # Prepare prompt for Gemini
     prompt = "You are an AI assistant for Oson Reklama agency. Analyze the user's request and identify the most suitable advertising service type from: Banner, Bo'rtma harflar, Flayer / Vizitka, Layt-boks, Boshqa / Maxsus loyiha. Respond ONLY with the identified service type, or 'Boshqa / Maxsus loyiha' if unsure. Keep the response short and concise.\n\n"
     for role, content in history:
         prompt += f"{role}: {content}\n"
@@ -93,15 +103,13 @@ async def ai_consultant(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     try:
         response = model.generate_content(prompt)
         service_type = response.text.strip()
-        # Save AI response to history
         database.add_chat_message(user_id, "assistant", service_type)
     except Exception as e:
         logger.error(f"Gemini API error: {e}")
-        service_type = "Boshqa / Maxsus loyiha" # Fallback
+        service_type = "Boshqa / Maxsus loyiha"
 
     context.user_data["service_type"] = service_type
 
-    # Dynamic menu based on AI analysis
     keyboard = [
         [InlineKeyboardButton("🖼 Premium Banner", callback_data="Banner")],
         [InlineKeyboardButton("✨ Bo'rtma Harflar", callback_data="Bo'rtma harflar")],
@@ -329,6 +337,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 def main() -> None:
+    # Start Flask in a separate thread
+    threading.Thread(target=run_flask, daemon=True).start()
+    
     application = Application.builder().token(config.BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
